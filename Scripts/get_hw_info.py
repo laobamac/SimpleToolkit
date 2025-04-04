@@ -189,10 +189,9 @@ def get_comprehensive_hardware_info():
             pass
     
     # 打印表头
-    print_aligned(cols, *[col['title'] for col in cols])
-    
-    # 打印分隔线（使用您喜欢的等号分隔线）
     separator = "=" * required_width
+    print(separator)
+    print_aligned(cols, *[col['title'] for col in cols])
     print(separator)
     
     # CPU信息
