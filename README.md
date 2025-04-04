@@ -1,2 +1,2 @@
 # SimpleToolkit
-A open-source gui toolkit for Hackintosh.
+A open-source TUI toolkit for Hackintosh.
