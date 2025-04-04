@@ -1,3 +1,7 @@
-8086&3E92=0
+8086&3E92=1
 8086&3E92.info=最高至macOS Sequoia
-8086&3E92.kext=系统内置，无需额外加载
+8086&3E92.kext=系统内置
+10DE&1F0B=0
+1002&67DF=1
+1002&67DF.info=最高至macOS Sequoia
+1002&67DF.kext=系统内置

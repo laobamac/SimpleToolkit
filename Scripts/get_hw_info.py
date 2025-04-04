@@ -93,27 +93,64 @@ def colorize_text(text, status):
     else:  # 其他状态
         return f"{Fore.YELLOW}{text}{Style.RESET_ALL}"
 
+def get_display_width(text):
+    """计算字符串的显示宽度（中文算2个字符，英文算1个）"""
+    try:
+        # 尝试使用wcwidth库（如果可用）
+        from wcwidth import wcswidth
+        return wcswidth(text)
+    except ImportError:
+        # 回退方法：简单计算中文字符
+        count = 0
+        for char in text:
+            # 基本判断中文字符（不完全准确但适用于大多数情况）
+            if ord(char) > 127:
+                count += 2
+            else:
+                count += 1
+        return count
+
 def print_aligned(cols, *args):
-    """打印对齐的文本，处理颜色代码"""
+    """打印对齐的文本，处理颜色代码和中英文混排"""
     if len(args) != len(cols):
         raise ValueError("参数数量与列数不匹配")
     
     parts = []
     for i, (text, col) in enumerate(zip(args, cols)):
-        # 获取不带颜色的文本长度
+        # 获取不带颜色的文本
         clean_text = re.sub(r'\x1b\[[0-9;]*m', '', str(text))
-        clean_length = len(clean_text)
+        
+        # 计算实际显示宽度
+        display_width = get_display_width(clean_text)
         
         # 如果文本太长则截断
-        if clean_length > col['width']:
-            text = clean_text[:col['width']-3] + '...'
-            clean_text = re.sub(r'\x1b\[[0-9;]*m', '', str(text))
-            clean_length = len(clean_text)
+        if display_width > col['width']:
+            # 找到合适的截断位置
+            truncated = ""
+            current_width = 0
+            for char in clean_text:
+                char_width = get_display_width(char)
+                if current_width + char_width > col['width'] - 3:
+                    truncated += "..."
+                    break
+                truncated += char
+                current_width += char_width
+            clean_text = truncated
+            # 重新应用颜色到截断后的文本
+            if hasattr(text, 'startswith') and text.startswith('\x1b['):
+                text = colorize_text(clean_text, '1' if Fore.GREEN in text else ('0' if Fore.RED in text else None))
+            else:
+                text = clean_text
+            display_width = get_display_width(clean_text)
         
         # 计算需要的填充
-        padding = col['width'] - clean_length
+        padding = col['width'] - display_width
         if padding > 0:
-            text = f"{text}{' ' * padding}"
+            # 对于有颜色的文本，在文本和填充之间插入颜色重置代码
+            if hasattr(text, 'startswith') and text.startswith('\x1b['):
+                text = f"{text}{Style.RESET_ALL}{' ' * padding}{text[-4:]}"  # 重新应用颜色
+            else:
+                text = f"{text}{' ' * padding}"
         
         parts.append(text)
     

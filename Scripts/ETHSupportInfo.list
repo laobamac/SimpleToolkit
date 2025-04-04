@@ -1,0 +1,7 @@
+8086&1533=1
+8086&1533.kext=SimpleGBE.kext
+8086&15B8=1
+8086&15B8.kext=IntelMausi.kext
+14E4&4353=1
+14E4&4353.info=Sonoma后需补丁
+14E4&4353.kext=AirportBrcmFixup.kext
