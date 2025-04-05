@@ -5,6 +5,7 @@ from PyQt5.QtGui import QFont, QColor
 from PyQt5.QtCore import Qt
 import wmi
 import re
+import os
 
 class HardwareCard(QFrame):
     def __init__(self, hardware_type, items, parent=None):
@@ -60,13 +61,15 @@ class HardwareCard(QFrame):
             # 状态
             status_label = QLabel(item['status'])
             status = item.get('raw_status', None)
-            is_wildcard = item.get('is_wildcard', False)
+            match_type = item.get('match_type', None)
             
             if status == "1":
-                if is_wildcard:
-                    status_label.setStyleSheet("color: #FFA500; font-weight: bold;")  # 橙色表示通配匹配
-                else:
+                if match_type == "exact":
                     status_label.setStyleSheet("color: #2e7d32; font-weight: bold;")  # 绿色表示完全匹配
+                elif match_type == "fuzzy":
+                    status_label.setStyleSheet("color: #FFA500; font-weight: bold;")  # 橙色表示模糊匹配
+                elif match_type == "wildcard":
+                    status_label.setStyleSheet("color: #FFD700; font-weight: bold;")  # 金色表示通配匹配
             elif status == "0":
                 status_label.setStyleSheet("color: #c62828; font-weight: bold;")  # 红色表示不支持
             else:
@@ -77,14 +80,16 @@ class HardwareCard(QFrame):
             # 详情
             detail_label = QLabel(item['detail'])
             if status == "1":
-                if is_wildcard:
-                    detail_label.setStyleSheet("color: #FFA500;")  # 橙色表示通配匹配
-                else:
-                    detail_label.setStyleSheet("color: #2e7d32;")  # 绿色表示完全匹配
+                if match_type == "exact":
+                    detail_label.setStyleSheet("color: #2e7d32;")
+                elif match_type == "fuzzy":
+                    detail_label.setStyleSheet("color: #FFA500;")
+                elif match_type == "wildcard":
+                    detail_label.setStyleSheet("color: #FFD700;")
             elif status == "0":
-                detail_label.setStyleSheet("color: #c62828;")  # 红色表示不支持
+                detail_label.setStyleSheet("color: #c62828;")
             else:
-                detail_label.setStyleSheet("color: #616161;")  # 灰色表示未知
+                detail_label.setStyleSheet("color: #616161;")
             detail_label.setWordWrap(True)
             detail_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             item_layout.addWidget(detail_label)
@@ -92,14 +97,16 @@ class HardwareCard(QFrame):
             # 驱动
             kext_label = QLabel(item['kext'])
             if status == "1":
-                if is_wildcard:
-                    kext_label.setStyleSheet("color: #FFA500;")  # 橙色表示通配匹配
-                else:
-                    kext_label.setStyleSheet("color: #2e7d32;")  # 绿色表示完全匹配
+                if match_type == "exact":
+                    kext_label.setStyleSheet("color: #2e7d32;")
+                elif match_type == "fuzzy":
+                    kext_label.setStyleSheet("color: #FFA500;")
+                elif match_type == "wildcard":
+                    kext_label.setStyleSheet("color: #FFD700;")
             elif status == "0":
-                kext_label.setStyleSheet("color: #c62828;")  # 红色表示不支持
+                kext_label.setStyleSheet("color: #c62828;")
             else:
-                kext_label.setStyleSheet("color: #616161;")  # 灰色表示未知
+                kext_label.setStyleSheet("color: #616161;")
             kext_label.setWordWrap(True)
             kext_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
             item_layout.addWidget(kext_label)
@@ -113,6 +120,12 @@ class HardwareCard(QFrame):
             line.setFrameShadow(QFrame.Sunken)
             line.setStyleSheet("color: #e0e0e0;")
             layout.addWidget(line)
+
+def get_resource_path(filename):
+    """ 获取嵌入文件的路径 """
+    if hasattr(sys, '_MEIPASS'):  # 打包后运行
+        return os.path.join(sys._MEIPASS, filename)
+    return os.path.join(os.path.dirname(__file__), filename)  # 开发环境运行
 
 class HardwareInfoGUI(QMainWindow):
     def __init__(self):
@@ -188,16 +201,19 @@ class HardwareInfoGUI(QMainWindow):
         legend_layout = QHBoxLayout(legend)
         legend_layout.setSpacing(12)
         
-        supported_legend = QLabel("✅ 支持(完全匹配)")
-        supported_legend.setStyleSheet("color: #2e7d32; font-size: 11px;")
-        wildcard_legend = QLabel("🟠 支持(厂商匹配)")
-        wildcard_legend.setStyleSheet("color: #FFA500; font-size: 11px;")
+        exact_legend = QLabel("✅ 支持(完全匹配)")
+        exact_legend.setStyleSheet("color: #2e7d32; font-size: 11px;")
+        fuzzy_legend = QLabel("🟠 支持(模糊匹配)")
+        fuzzy_legend.setStyleSheet("color: #FFA500; font-size: 11px;")
+        wildcard_legend = QLabel("🟡 支持(厂商匹配)")
+        wildcard_legend.setStyleSheet("color: #FFD700; font-size: 11px;")
         unsupported_legend = QLabel("❌ 不支持")
         unsupported_legend.setStyleSheet("color: #c62828; font-size: 11px;")
         unknown_legend = QLabel("❓ 未知")
         unknown_legend.setStyleSheet("color: #616161; font-size: 11px;")
         
-        legend_layout.addWidget(supported_legend)
+        legend_layout.addWidget(exact_legend)
+        legend_layout.addWidget(fuzzy_legend)
         legend_layout.addWidget(wildcard_legend)
         legend_layout.addWidget(unsupported_legend)
         legend_layout.addWidget(unknown_legend)
@@ -255,7 +271,7 @@ class HardwareInfoGUI(QMainWindow):
         msg.setText(about_text)
         msg.setStandardButtons(QMessageBox.Ok)
         msg.exec_()
-    
+
     def update_ui(self, hardware_data):
         """更新UI显示"""
         # 清除旧内容
@@ -276,9 +292,10 @@ class HardwareInfoGUI(QMainWindow):
     def get_hardware_data(self):
         """获取硬件数据并转换为适合GUI显示的格式"""
         # 加载所有支持信息
-        gpu_support, gpu_details, gpu_kext = self.load_support_info("GPUSupportInfo.list")
-        hda_support, hda_details, hda_kext = self.load_support_info("HDASupportInfo.list")
-        eth_support, eth_details, eth_kext = self.load_support_info("ETHSupportInfo.list")
+        gpu_support, gpu_details, gpu_kext = self.load_support_info(get_resource_path("GPUSupportInfo.list"))
+        hda_support, hda_details, hda_kext = self.load_support_info(get_resource_path("HDASupportInfo.list"))
+        eth_support, eth_details, eth_kext = self.load_support_info(get_resource_path("ETHSupportInfo.list"))
+        hdd_support, hdd_details, hdd_kext = self.load_support_info(get_resource_path("HDSupportInfo.list"))
         
         c = wmi.WMI()
         hardware_data = {}
@@ -293,7 +310,7 @@ class HardwareInfoGUI(QMainWindow):
                 'detail': '',
                 'kext': '',
                 'raw_status': None,
-                'is_wildcard': False
+                'match_type': None
             })
         hardware_data['处理器'] = cpu_items
         
@@ -308,21 +325,39 @@ class HardwareInfoGUI(QMainWindow):
                 'detail': '',
                 'kext': '',
                 'raw_status': None,
-                'is_wildcard': False
+                'match_type': None
             })
         hardware_data['内存'] = mem_items
         
         # 硬盘信息
         disk_items = []
         for disk in c.Win32_DiskDrive():
+            model = disk.Model.strip()
+            status, _, detail, required_kext, match_type = self.get_support_info_with_multimatch(
+        model, hdd_support, hdd_details, hdd_kext, is_hdd=True)
+    
+            if status == "1":
+                if match_type == "exact":
+                    status_text = "支持(完全匹配)"
+                elif match_type == "fuzzy":
+                    status_text = "支持(模糊匹配)"
+                elif match_type == "wildcard":
+                    status_text = "支持(厂商匹配)"
+                else:
+                    status_text = "支持"
+            elif status == "0":
+                status_text = "不支持"
+            else:
+                status_text = "未知"
+    
             disk_items.append({
-                'model': disk.Model.strip(),
+                'model': model,
                 'id': disk.DeviceID or 'N/A',
-                'status': 'N/A',
-                'detail': '',
-                'kext': '',
-                'raw_status': None,
-                'is_wildcard': False
+                'status': status_text,
+                'detail': detail,
+                'kext': required_kext,
+                'raw_status': status,
+                'match_type': match_type
             })
         hardware_data['存储设备'] = disk_items
         
@@ -336,7 +371,7 @@ class HardwareInfoGUI(QMainWindow):
                 'detail': '',
                 'kext': '',
                 'raw_status': None,
-                'is_wildcard': False
+                'match_type': None
             })
         hardware_data['主板'] = board_items
         
@@ -345,12 +380,24 @@ class HardwareInfoGUI(QMainWindow):
         for gpu in c.Win32_VideoController():
             if gpu.Name.strip() not in ["Microsoft Basic Display Driver"]:
                 device_id = self.extract_hardware_ids(gpu.PNPDeviceID)
-                status, clean_id, detail, required_kext, is_wildcard = self.get_support_info_with_wildcard(
+                status, clean_id, detail, required_kext, match_type = self.get_support_info_with_multimatch(
                     device_id, gpu_support, gpu_details, gpu_kext)
                 
-                status_text = "支持" if status == "1" else ("不支持" if status == "0" else "未知")
-                if is_wildcard and status == "1":
-                    status_text = "支持(厂商)"
+                # 确保只有status="1"时才显示支持
+                if status == "1":
+                    if match_type == "exact":
+                        status_text = "支持(完全匹配)"
+                    elif match_type == "fuzzy":
+                        status_text = "支持(模糊匹配)"
+                    elif match_type == "wildcard":
+                        status_text = "支持(厂商匹配)"
+                    else:
+                        status_text = "支持"
+                elif status == "0":
+                    status_text = "不支持"
+                else:
+                    status_text = "未知"
+                
                 gpu_items.append({
                     'model': gpu.Name.strip(),
                     'id': clean_id,
@@ -358,7 +405,7 @@ class HardwareInfoGUI(QMainWindow):
                     'detail': detail,
                     'kext': required_kext,
                     'raw_status': status,
-                    'is_wildcard': is_wildcard
+                    'match_type': match_type
                 })
         hardware_data['显卡'] = gpu_items
         
@@ -366,12 +413,23 @@ class HardwareInfoGUI(QMainWindow):
         sound_items = []
         for sound in c.Win32_SoundDevice():
             device_id = self.extract_hardware_ids(sound.PNPDeviceID)
-            status, clean_id, detail, required_kext, is_wildcard = self.get_support_info_with_wildcard(
+            status, clean_id, detail, required_kext, match_type = self.get_support_info_with_multimatch(
                 device_id, hda_support, hda_details, hda_kext)
             
-            status_text = "支持" if status == "1" else ("不支持" if status == "0" else "未知")
-            if is_wildcard and status == "1":
-                status_text = "支持(厂商)"
+            if status == "1":
+                if match_type == "exact":
+                    status_text = "支持(完全匹配)"
+                elif match_type == "fuzzy":
+                    status_text = "支持(模糊匹配)"
+                elif match_type == "wildcard":
+                    status_text = "支持(厂商匹配)"
+                else:
+                    status_text = "支持"
+            elif status == "0":
+                status_text = "不支持"
+            else:
+                status_text = "未知"
+                
             sound_items.append({
                 'model': sound.Name,
                 'id': clean_id,
@@ -379,7 +437,7 @@ class HardwareInfoGUI(QMainWindow):
                 'detail': detail,
                 'kext': required_kext,
                 'raw_status': status,
-                'is_wildcard': is_wildcard
+                'match_type': match_type
             })
         hardware_data['声卡'] = sound_items
         
@@ -387,12 +445,23 @@ class HardwareInfoGUI(QMainWindow):
         nic_items = []
         for nic in c.Win32_NetworkAdapter(PhysicalAdapter=True):
             device_id = self.extract_hardware_ids(nic.PNPDeviceID)
-            status, clean_id, detail, required_kext, is_wildcard = self.get_support_info_with_wildcard(
+            status, clean_id, detail, required_kext, match_type = self.get_support_info_with_multimatch(
                 device_id, eth_support, eth_details, eth_kext)
             
-            status_text = "支持" if status == "1" else ("不支持" if status == "0" else "未知")
-            if is_wildcard and status == "1":
-                status_text = "支持(厂商)"
+            if status == "1":
+                if match_type == "exact":
+                    status_text = "支持(完全匹配)"
+                elif match_type == "fuzzy":
+                    status_text = "支持(模糊匹配)"
+                elif match_type == "wildcard":
+                    status_text = "支持(厂商匹配)"
+                else:
+                    status_text = "支持"
+            elif status == "0":
+                status_text = "不支持"
+            else:
+                status_text = "未知"
+                
             nic_items.append({
                 'model': nic.Name,
                 'id': clean_id,
@@ -400,35 +469,88 @@ class HardwareInfoGUI(QMainWindow):
                 'detail': detail,
                 'kext': required_kext,
                 'raw_status': status,
-                'is_wildcard': is_wildcard
+                'match_type': match_type
             })
         hardware_data['网络适配器'] = nic_items
         
         return hardware_data
     
-    def get_support_info_with_wildcard(self, device_id, support_info, details_info, kext_info):
-        """获取设备支持信息，支持厂商通配ID匹配"""
-        if not device_id:
-            return None, "N/A", "未知", "无", False
+    def get_support_info_with_multimatch(self, device_id_or_name, support_info, details_info, kext_info, is_hdd=False):
+        """获取设备支持信息，支持多种匹配方式
+        is_hdd: 是否为硬盘设备，如果是则按名称匹配而非ID匹配"""
+    
+        if is_hdd:
+            # 硬盘按名称匹配的逻辑
+            device_name = device_id_or_name.upper()
         
-        # 先尝试完全匹配
-        status = support_info.get(device_id)
-        if status is not None:
-            detail = details_info.get(device_id, "未知")
-            kext = kext_info.get(device_id, "无")
-            return status, device_id, detail, kext, False
+            # 1. 尝试完全匹配
+            if device_name in support_info:
+                status = support_info[device_name]
+                return (status, 
+                        device_name, 
+                        details_info.get(device_name, "未知"), 
+                        kext_info.get(device_name, "无"), 
+                        "exact")
         
-        # 如果完全匹配失败，尝试厂商通配匹配
-        if '&' in device_id:
-            ven_id = device_id.split('&')[0] + '&FFFF'
-            status = support_info.get(ven_id)
-            if status is not None:
-                detail = details_info.get(ven_id, "未知(厂商通用支持)")
-                kext = kext_info.get(ven_id, "无")
-                return status, device_id, detail, kext, True
+            # 2. 尝试模糊匹配 (通配符匹配)
+            for key in support_info:
+                if key.startswith('*') and key[1:].upper() in device_name:
+                    status = support_info[key]
+                    return (status, 
+                            device_name, 
+                            details_info.get(key, f"支持({key})"), 
+                            kext_info.get(key, "无"), 
+                            "fuzzy")
         
-        # 如果都没有匹配到
-        return None, device_id, "未知", "无", False
+            # 3. 尝试厂商匹配 (不包含通配符的厂商名)
+            for key in support_info:
+                if not key.startswith('*') and key.upper() in device_name:
+                    status = support_info[key]
+                    return (status, 
+                            device_name, 
+                            details_info.get(key, f"支持({key})"), 
+                            kext_info.get(key, "无"), 
+                            "wildcard")
+        
+            return None, device_name, "未知", "无", None
+        else:
+            # 原有ID匹配逻辑
+            if not device_id_or_name or '&' not in device_id_or_name:
+                return None, device_id_or_name or "N/A", "未知", "无", None
+        
+            ven_id, dev_id = device_id_or_name.split('&')
+        
+            # 1. 尝试完全匹配
+            if device_id_or_name in support_info:
+                status = support_info[device_id_or_name]
+                return (status, 
+                        device_id_or_name, 
+                        details_info.get(device_id_or_name, "未知"), 
+                        kext_info.get(device_id_or_name, "无"), 
+                        "exact")
+        
+            # 2. 尝试模糊匹配 (后两位FF)
+            fuzzy_id = f"{ven_id}&{dev_id[:2]}FF"
+            if fuzzy_id in support_info:
+                status = support_info[fuzzy_id]
+                return (status, 
+                        device_id_or_name, 
+                        details_info.get(fuzzy_id, "未知(模糊匹配)"), 
+                        kext_info.get(fuzzy_id, "无"), 
+                        "fuzzy")
+        
+            # 3. 尝试通配匹配 (厂商匹配)
+            wildcard_id = f"{ven_id}&FFFF"
+            if wildcard_id in support_info:
+                status = support_info[wildcard_id]
+                return (status, 
+                        device_id_or_name, 
+                        details_info.get(wildcard_id, "未知(厂商通用支持)"), 
+                        kext_info.get(wildcard_id, "无"), 
+                        "wildcard")
+            
+            # 4. 没有匹配到
+            return None, device_id_or_name, "未知", "无", None
     
     def extract_hardware_ids(self, pnp_id):
         """从PNPDeviceID中提取VEN和DEV并合并为VENID&DEVID格式"""

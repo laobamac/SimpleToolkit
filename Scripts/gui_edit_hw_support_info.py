@@ -20,6 +20,7 @@ SUPPORT_FILES = {
     "GPU支持信息": ("GPUSupportInfo.list", "显卡"),
     "声卡支持信息": ("HDASupportInfo.list", "声卡"), 
     "网卡支持信息": ("ETHSupportInfo.list", "网卡"),
+    "硬盘支持信息": ("HDSupportInfo.list", "硬盘"), 
 }
 
 # 创建文件如果不存在
@@ -30,7 +31,7 @@ for file, _ in SUPPORT_FILES.values():
 class ListFileValidator:
     """列表文件格式验证器"""
     @staticmethod
-    def is_valid_entry(line: str) -> Tuple[bool, str]:
+    def is_valid_entry(line: str, file_type: str) -> Tuple[bool, str]:
         """验证单行条目是否有效"""
         line = line.strip()
         if not line or line.startswith("#"):
@@ -43,43 +44,50 @@ class ListFileValidator:
         key = key.strip()
         value = value.strip()
         
-        # 验证设备ID格式
+        # 硬盘支持信息验证规则
+        if file_type == "硬盘支持信息":
+            if not key:
+                return False, "关键词不能为空"
+            # 允许任意格式的值
+            return True, ""
+        
+        # 其他支持信息验证规则
         if not key.endswith(('.info', '.kext')):
             if not re.match(r'^[0-9A-Fa-f]{4}&[0-9A-Fa-f]{4}$', key):
                 return False, f"无效设备ID格式: {key}"
-            
-            # 状态值不能为空且必须是0或1
-            if not value:
-                return False, "状态值不能为空"
-            if value not in ('0', '1'):
+            if value and value not in ('0', '1'):
                 return False, "状态值必须是0或1"
         
         return True, ""
 
     @staticmethod
-    def parse_file(content: str) -> Dict[str, dict]:
+    def parse_file(content: str, file_type: str) -> Dict[str, dict]:
         """解析文件内容为结构化数据"""
         result = {}
         for line in content.splitlines():
             line = line.strip()
-            if not line or "=" not in line:
+            if not line or line.startswith("#"):
                 continue
-                
+        
+            if "=" not in line:
+                continue
+            
             key, value = line.split("=", 1)
             key = key.strip()
             value = value.strip()
+    
             base_key = key.split(".")[0] if "." in key else key
-            
+    
             if base_key not in result:
-                result[base_key] = {"main": None, "info": None, "kext": None}
-            
+                result[base_key] = {"main": "", "info": "", "kext": ""}
+    
             if key.endswith(".info"):
-                result[base_key]["info"] = value if value else None
+                result[base_key]["info"] = value
             elif key.endswith(".kext"):
-                result[base_key]["kext"] = value if value else None
+                result[base_key]["kext"] = value
             else:
-                result[base_key]["main"] = value if value else None
-        
+                result[base_key]["main"] = value
+    
         return result
 
 def create_import_window():
@@ -153,7 +161,6 @@ def show_skip_details(skip_details: List[Tuple[str, str]]):
 
 def import_entries(window, current_entries: Dict[str, dict], current_file: str, import_options: dict, import_file: str) -> Dict[str, dict]:
     """导入条目到当前文件中"""
-    # 读取导入文件内容
     try:
         with open(import_file, "r", encoding="utf-8") as f:
             content = f.read()
@@ -161,18 +168,17 @@ def import_entries(window, current_entries: Dict[str, dict], current_file: str, 
         sg.popup_error(f"无法读取导入文件: {str(e)}")
         return current_entries
     
-    # 解析导入文件内容
     imported_entries = {}
     skip_details = []
+    file_type = os.path.basename(current_file).replace(".list", "")
     
-    # 先验证并解析所有条目
     for line_num, line in enumerate(content.splitlines(), 1):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
             
-        # 验证格式
-        valid, msg = ListFileValidator.is_valid_entry(line)
+        # 验证格式（添加file_type参数）
+        valid, msg = ListFileValidator.is_valid_entry(line, file_type)
         if not valid and import_options["-SKIP_ERRORS-"]:
             skip_details.append((f"第{line_num}行", f"格式错误: {msg}"))
             continue
@@ -237,7 +243,7 @@ def import_entries(window, current_entries: Dict[str, dict], current_file: str, 
         imported_count += 1
     
     # 保存更新后的内容
-    new_content = generate_file_content(current_entries)
+    new_content = generate_file_content(current_entries, file_type)
     if save_file_content(current_file, new_content):
         show_import_result(imported_count, skipped_count, skip_details)
     
@@ -280,16 +286,16 @@ def create_main_window():
         ],
         [
             sg.Frame("编辑条目", [
-                [
-                    sg.Text("设备ID:", size=(8, 1)),
-                    sg.Input(key="-EDIT_ID-", size=(12, 1), disabled=True),
-                    sg.Text("状态:"),
-                    sg.Combo(["", "0", "1"], key="-EDIT_STATUS-", size=(4, 1)),
-                    sg.Text("详情:"),
-                    sg.Input(key="-EDIT_INFO-", size=(30, 1)),
-                    sg.Text("驱动:"),
-                    sg.Input(key="-EDIT_KEXT-", size=(20, 1))
-                ]
+                    [
+                        sg.Text("设备ID:", size=(10, 1), key="-ID_LABEL-"),
+                        sg.Input(key="-EDIT_ID-", size=(20, 1), disabled=True),
+                        sg.Text("状态:", size=(5, 1)),
+                        sg.Combo(["", "0", "1"], key="-EDIT_STATUS-", size=(5, 1)),
+                        sg.Text("详情:", size=(5, 1)),
+                        sg.Input(key="-EDIT_INFO-", size=(30, 1)),
+                        sg.Text("驱动:", size=(5, 1)),
+                        sg.Input(key="-EDIT_KEXT-", size=(20, 1))
+                    ]
             ], expand_x=True)
         ],
         [
@@ -314,19 +320,53 @@ def create_main_window():
     window["-ENTRY_TABLE-"].expand(True, True)
     return window
 
+def update_edit_controls(window, file_type: str):
+    """根据文件类型更新编辑控件状态"""
+    is_hd = (file_type == "硬盘支持信息")
+    
+    # 更新标签文本
+    window["-ID_LABEL-"].update("关键词:" if is_hd else "设备ID:")
+    
+    # 始终允许编辑ID输入框
+    window["-EDIT_ID-"].update(disabled=False)
+    
+    # 确保所有输入框可编辑
+    window["-EDIT_STATUS-"].update(disabled=False)
+    window["-EDIT_INFO-"].update(disabled=False)
+    window["-EDIT_KEXT-"].update(disabled=False)
+
+def generate_file_content(entries: Dict[str, dict], file_type: str) -> str:
+    """从条目数据生成文件内容"""
+    lines = []
+    for dev_id, data in entries.items():
+        # 主条目（设备ID=状态）
+        if data["main"] is not None and data["main"] != "":
+            lines.append(f"{dev_id}={data['main']}")
+        
+        # 详情信息（设备ID.info=详情）
+        if data["info"] is not None and data["info"] != "":
+            lines.append(f"{dev_id}.info={data['info']}")
+        
+        # 驱动信息（设备ID.kext=驱动）
+        if data["kext"] is not None and data["kext"] != "":
+            lines.append(f"{dev_id}.kext={data['kext']}")
+    
+    return "\n".join(lines)
 def update_table(window, file_type: str, filter_str: str = "") -> None:
     filename, _ = SUPPORT_FILES[file_type]
     content = load_file_content(filename)
-    entries = ListFileValidator.parse_file(content)
+    entries = ListFileValidator.parse_file(content, file_type)
     
     table_data = []
     for dev_id, data in entries.items():
         if filter_str and filter_str.lower() not in dev_id.lower():
             continue
             
+        # 所有类型统一显示格式
         status = data["main"] or ""
         info = data["info"] or ""
         kext = data["kext"] or ""
+        
         table_data.append([dev_id, status, info, kext])
     
     window["-ENTRY_TABLE-"].update(values=table_data)
@@ -353,19 +393,7 @@ def save_file_content(filename: str, content: str) -> bool:
         sg.popup_error(f"保存文件失败: {str(e)}")
         return False
 
-def generate_file_content(entries: Dict[str, dict]) -> str:
-    """从条目数据生成文件内容"""
-    lines = []
-    for dev_id, data in entries.items():
-        if data["main"] is not None:
-            lines.append(f"{dev_id}={data['main']}")
-        if data["info"] is not None:
-            lines.append(f"{dev_id}.info={data['info']}")
-        if data["kext"] is not None:
-            lines.append(f"{dev_id}.kext={data['kext']}")
-    return "\n".join(lines)
-
-def validate_file_content(content: str) -> Tuple[List[str], List[str]]:
+def validate_file_content(content: str, file_type: str) -> Tuple[List[str], List[str]]:
     """验证文件内容格式并返回可修复的错误"""
     error_lines = []
     repairable_errors = []
@@ -373,7 +401,7 @@ def validate_file_content(content: str) -> Tuple[List[str], List[str]]:
         line = line.strip()
         if not line:
             continue
-        valid, msg = ListFileValidator.is_valid_entry(line)
+        valid, msg = ListFileValidator.is_valid_entry(line, file_type)  # 添加file_type参数
         if not valid:
             error_entry = f"第{i}行: {msg} - {line}"
             error_lines.append(error_entry)
@@ -387,13 +415,15 @@ def main():
     current_entries = {}
     current_table_data = []
     selected_index = None
+    current_file_type = None  # 跟踪当前文件类型
 
     # 初始化加载第一个文件的数据
     if SUPPORT_FILES:
         first_file_type = list(SUPPORT_FILES.keys())[0]
         window["-FILE_TYPE-"].update(first_file_type)
         current_file, _ = SUPPORT_FILES[first_file_type]
-        current_entries = ListFileValidator.parse_file(load_file_content(current_file))
+        current_file_type = first_file_type  # 设置当前文件类型
+        current_entries = ListFileValidator.parse_file(load_file_content(current_file), first_file_type)
         current_table_data = update_table(window, first_file_type)
         window["-STATUS-"].update(f"已加载: {current_file}")
 
@@ -406,7 +436,9 @@ def main():
         elif event == "-FILE_TYPE-":
             file_type = values["-FILE_TYPE-"]
             current_file, _ = SUPPORT_FILES[file_type]
-            current_entries = ListFileValidator.parse_file(load_file_content(current_file))
+            current_file_type = file_type  # 更新当前文件类型
+            update_edit_controls(window, file_type)  # 添加这行
+            current_entries = ListFileValidator.parse_file(load_file_content(current_file), file_type)
             current_table_data = update_table(window, file_type)
             window["-STATUS-"].update(f"已加载: {current_file}")
 
@@ -416,7 +448,13 @@ def main():
                 if selected_index < len(current_table_data):
                     selected_row = current_table_data[selected_index]
                     window["-EDIT_ID-"].update(selected_row[0])
-                    window["-EDIT_STATUS-"].update(selected_row[1])
+            
+                    # 根据文件类型更新状态值
+                    if current_file_type == "硬盘支持信息":
+                        window["-EDIT_STATUS-"].update(selected_row[1])
+                    else:
+                        window["-EDIT_STATUS-"].update(selected_row[1])
+                
                     window["-EDIT_INFO-"].update(selected_row[2])
                     window["-EDIT_KEXT-"].update(selected_row[3])
                     window["-EDIT_ID-"].update(disabled=True)
@@ -427,11 +465,12 @@ def main():
             current_table_data = update_table(window, values["-FILE_TYPE-"], values["-FILTER-"])
 
         elif event == "-REFRESH-" and current_file:
-            current_entries = ListFileValidator.parse_file(load_file_content(current_file))
+            current_entries = ListFileValidator.parse_file(load_file_content(current_file), current_file_type)
             current_table_data = update_table(window, values["-FILE_TYPE-"], values["-FILTER-"])
 
         elif event == "-ADD-":
             window["-EDIT_ID-"].update("")
+            window["-EDIT_STATUS-"].update("")
             window["-EDIT_STATUS-"].update("")
             window["-EDIT_INFO-"].update("")
             window["-EDIT_KEXT-"].update("")
@@ -439,37 +478,40 @@ def main():
             selected_index = None
 
         elif event == "-SAVE-" and current_file:
-            dev_id = values["-EDIT_ID-"].strip().upper()
+            dev_id = values["-EDIT_ID-"].strip()
             status = values["-EDIT_STATUS-"].strip()
             info = values["-EDIT_INFO-"].strip()
             kext = values["-EDIT_KEXT-"].strip()
 
             if not dev_id:
-                sg.popup_error("设备ID不能为空!")
+                sg.popup_error("设备ID/关键词不能为空!")
                 continue
 
-            if not re.match(r'^[0-9A-F]{4}&[0-9A-F]{4}$', dev_id, re.IGNORECASE):
-                sg.popup_error("设备ID格式必须为XXXX&XXXX (十六进制，如1002&67DF)")
+            # 验证设备ID格式（仅对非硬盘支持信息）
+            if current_file_type != "硬盘支持信息":
+                if not re.match(r'^[0-9A-F]{4}&[0-9A-F]{4}$', dev_id, re.IGNORECASE):
+                    sg.popup_error("设备ID格式必须为XXXX&XXXX (十六进制，如1002&67DF)")
+                    continue
+
+            # 验证状态值
+            if status and status not in ('0', '1'):
+                sg.popup_error("状态值必须是0或1")
                 continue
 
+            # 创建或更新条目
             if dev_id not in current_entries:
                 current_entries[dev_id] = {"main": None, "info": None, "kext": None}
 
-            if status:
-                if status not in ('0', '1'):
-                    sg.popup_error("状态值必须是0或1")
-                    continue
-                current_entries[dev_id]["main"] = status
-            if info:
-                current_entries[dev_id]["info"] = info
-            if kext:
-                current_entries[dev_id]["kext"] = kext
+            # 更新所有字段（包括空值）
+            current_entries[dev_id]["main"] = status if status else ""
+            current_entries[dev_id]["info"] = info if info else ""
+            current_entries[dev_id]["kext"] = kext if kext else ""
 
-            content = generate_file_content(current_entries)
+            # 生成并保存文件内容
+            content = generate_file_content(current_entries, current_file_type)
             if save_file_content(current_file, content):
-                current_table_data = update_table(window, values["-FILE_TYPE-"], values["-FILTER-"])
+                current_table_data = update_table(window, current_file_type, values["-FILTER-"])
                 window["-STATUS-"].update(f"已保存: {current_file}")
-                window["-EDIT_ID-"].update(disabled=True)
 
         elif event == "-DELETE-" and current_file:
             dev_id = values["-EDIT_ID-"].strip()
@@ -480,18 +522,21 @@ def main():
             if dev_id in current_entries:
                 if sg.popup_yes_no(f"确定要删除 {dev_id} 吗?", title="确认删除") == "Yes":
                     del current_entries[dev_id]
-                    content = generate_file_content(current_entries)
+                    content = generate_file_content(current_entries, current_file_type)  # 确保传递file_type
                     if save_file_content(current_file, content):
-                        current_table_data = update_table(window, values["-FILE_TYPE-"], values["-FILTER-"])
+                        current_table_data = update_table(window, current_file_type, values["-FILTER-"])
                         window["-STATUS-"].update(f"已删除: {dev_id}")
+                        # 清空编辑区
                         window["-EDIT_ID-"].update("")
+                        window["-EDIT_STATUS-"].update("")
                         window["-EDIT_STATUS-"].update("")
                         window["-EDIT_INFO-"].update("")
                         window["-EDIT_KEXT-"].update("")
 
+
         elif event == "-VALIDATE-" and current_file:
             content = load_file_content(current_file)
-            errors, repairable_errors = validate_file_content(content)
+            errors, repairable_errors = validate_file_content(content, current_file_type)
             
             if errors:
                 repairable_text = "可自动修复的问题行:\n"
