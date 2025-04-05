@@ -1,8 +1,8 @@
-10EC&1168=1
-10EC&1168.info=Relteak
-10EC&1168.kext=AppleALC.kext
 1002&AA01=1
 1002&AA01.info=AMD显卡音频
 8086&280B=1
 8086&280B.info=Intel显卡音频
 8086&280B.kext=核显驱动后可用
+10EC&FFFF=1
+10EC&FFFF.info=Relteak大部分支持
+10EC&FFFF.kext=需AppleALC.kext注入
