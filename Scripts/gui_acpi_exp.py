@@ -9,9 +9,11 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 '''
 
+import shutil
 import sys
 import json
 import os
+import tempfile
 import re
 import subprocess
 from PySide6.QtWidgets import (
@@ -104,7 +106,7 @@ class SSDTBuilder:
 
     @classmethod
     def build_gpu_spoof_ssdt(cls, acpi_path, device_id, model_name=None, is_rx6500=False, parent_window=None):
-        """简化后的构建方法"""
+        """简化构建方法"""
         # 验证设备ID（只需验证仿冒ID）
         if not cls.validate_device_id(device_id, parent_window):
             return False
@@ -396,10 +398,17 @@ class DeviceLoaderThread(QThread):
     data_loaded = Signal(list)
     progress_update = Signal(int, str)
     log_update = Signal(str)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.process = None
+        self._is_running = True
 
     def run(self):
         try:
+            self.log_update.emit("=== 开始获取设备列表 ===")
             self.progress_update.emit(10, "正在获取设备列表...")
+            
             command = """
             [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
             Get-PnpDevice | Where-Object { 
@@ -407,53 +416,93 @@ class DeviceLoaderThread(QThread):
             } | ForEach-Object {
                 $prop = $_ | Get-PnpDeviceProperty -KeyName 'DEVPKEY_Device_LocationPaths' -ErrorAction SilentlyContinue;
                 if ($prop -and $prop.Data -ne $null) {
-                    [PSCustomObject]@{
+                    $json = [PSCustomObject]@{
                         DeviceName = $_.FriendlyName;
                         LocationPaths = $prop.Data;
                         Status = $_.Status;
                         Class = $_.Class;
                     } | ConvertTo-Json -Compress
+                    Write-Output $json
+                    # 小延迟以便GUI能及时更新
+                    Start-Sleep -Milliseconds 30
                 }
             }
             """
+            self.log_update.emit("执行 PowerShell 命令...")
             self.progress_update.emit(30, "正在执行 PowerShell...")
 
-            def run_powershell_hidden(command):
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = subprocess.SW_HIDE
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE
 
-                result = subprocess.run(
-                    ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-Command", command],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    startupinfo=startupinfo
-                )
-                return result
+            # 创建进程并实时读取输出
+            self.process = subprocess.Popen(
+                ["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-Command", command],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.PIPE,  # 添加stdin管道以便可以发送关闭信号
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                startupinfo=startupinfo,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+            )
 
-            result = run_powershell_hidden(command)
-
-            self.progress_update.emit(70, "正在解析数据...")
             devices = []
-            for line in filter(None, result.stdout.strip().split("\n")):
-                self.log_update.emit(line)
-                try:
-                    devices.append(json.loads(line))
-                except json.JSONDecodeError:
+            while self._is_running:
+                # 非阻塞读取
+                line = self.process.stdout.readline()
+                if not line:
+                    if self.process.poll() is not None:  # 进程已结束
+                        break
                     continue
+                
+                line = line.strip()
+                if line:
+                    self.log_update.emit(line)
+                    try:
+                        devices.append(json.loads(line))
+                    except json.JSONDecodeError as e:
+                        self.log_update.emit(f"JSON解析错误: {str(e)} - 原始行: {line}")
 
+            # 检查是否正常结束
+            if self._is_running and self.process.poll() is None:
+                self.log_update.emit("正在等待进程结束...")
+                self.process.wait(timeout=5)
+
+            # 保存结果
             self.progress_update.emit(90, "正在保存缓存...")
             with open(CACHE_FILE, "w", encoding="utf-8") as f:
                 json.dump(devices, f, ensure_ascii=False, indent=2)
 
             self.data_loaded.emit(devices)
             self.progress_update.emit(100, "加载完成！")
+            self.log_update.emit("=== 设备列表获取完成 ===")
 
         except Exception as e:
-            self.progress_update.emit(100, f"错误: {str(e)}")
             self.log_update.emit(f"[异常] {str(e)}")
+            self.progress_update.emit(100, f"错误: {str(e)}")
+        finally:
+            self.terminate_process()
+
+    def terminate_process(self):
+        """确保终止PowerShell进程"""
+        if self.process and self.process.poll() is None:
+            try:
+                # 尝试优雅终止
+                self.process.terminate()
+                self.process.wait(timeout=2)
+                if self.process.poll() is None:  # 如果还在运行
+                    self.process.kill()
+            except Exception as e:
+                self.log_update.emit(f"终止进程时出错: {str(e)}")
+
+    def stop(self):
+        """安全停止线程"""
+        self._is_running = False
+        self.terminate_process()
+        self.quit()
+        self.wait(2000)  # 等待线程结束
 
 def resource_path(relative_path):
     """获取资源的绝对路径"""
@@ -560,17 +609,29 @@ class SSDTFunctionDialog(QDialog):
 class DeviceLocationViewer(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.devices = []  # 初始化设备列表
-        self.device_table = None  # 显式声明属性
-        self.setup_ui()    # 初始化UI
+        self.devices = []
+        self.device_table = None
+        self.loader_thread = None  # 显式初始化
+        self.setup_ui()
         self.setup_ssdt_menu()
         self.check_cache()
-        self.log_text = ""  # 日志内容缓存
-        self.log_dialog = None  # 日志窗口引用
+        self.log_text = ""
+        self.log_dialog = None
+        # 初始化日志文件路径
+        self.log_file_path = os.path.join(tempfile.gettempdir(), "acpi_helper_log.txt")
+        self.ensure_log_file()
+
+    def closeEvent(self, event):
+        """重写关闭事件以确保线程和进程被正确清理"""
+        if self.loader_thread and self.loader_thread.isRunning():
+            self.loader_thread.stop()
+            if not self.loader_thread.wait(3000):  # 等待3秒
+                self.loader_thread.terminate()
+        event.accept()
 
     def setup_ui(self):
         # 主窗口设置
-        self.setWindowTitle("ACPI设备助手 by laobamac - V1.1")
+        self.setWindowTitle("ACPI设备助手 by laobamac - V1.2")
         self.setMinimumSize(900, 650)
         
         # 主控件
@@ -613,6 +674,11 @@ class DeviceLocationViewer(QMainWindow):
         main_layout.addWidget(self.log_button, alignment=Qt.AlignRight)
         self.log_button.clicked.connect(self.show_log_dialog)
 
+        # 初始化日志文件路径
+        self.log_file_path = os.path.join(tempfile.gettempdir(), "acpi_helper_log.txt")
+        self.log_dialog = None
+        self.ensure_log_file()
+        
 
         # 4. 主内容区（表格+详情）
         content_layout = QHBoxLayout()
@@ -653,6 +719,12 @@ class DeviceLocationViewer(QMainWindow):
         copy_btn.clicked.connect(self.copy_to_clipboard)
         main_layout.addWidget(copy_btn, alignment=Qt.AlignRight)
 
+    def ensure_log_file(self):
+        """确保日志文件存在"""
+        if not os.path.exists(self.log_file_path):
+            with open(self.log_file_path, "w", encoding="utf-8") as f:
+                f.write("=== ACPI Helper 日志 ===\n")
+    
     def show_about_dialog(self):
         """显示关于对话框"""
         about_text = f"""
@@ -664,7 +736,7 @@ class DeviceLocationViewer(QMainWindow):
             .author {{ margin-top: 10px; }}
         </style>
         <div class="title">ACPI设备助手</div>
-        <div class="version">版本: V1.1</div>
+        <div class="version">版本: V1.2</div>
         <div class="author">作者: laobamac</div>
         <div style="margin-top: 15px;">
             网站: <a href="https://www.simplehac.cn" class="website">SimpleHac资源社 https://www.simplehac.cn</a>
@@ -682,24 +754,95 @@ class DeviceLocationViewer(QMainWindow):
         about_box.setIconPixmap(QIcon(resource_path("Resources/gui_acpi_exp.ico")).pixmap(64, 64))
         about_box.exec()
 
+    def append_log(self, text):
+        """追加日志内容到临时文件"""
+        try:
+            with open(self.log_file_path, "a", encoding="utf-8") as f:
+                f.write(text + "\n")
+        
+            # 如果日志窗口已打开，则实时更新内容
+            if hasattr(self, 'log_dialog') and self.log_dialog and self.log_dialog.isVisible():
+                self.update_log_display()
+        except Exception as e:
+            print(f"写入日志失败: {str(e)}")
+    
     def show_log_dialog(self):
-        if not self.log_dialog:
-            self.log_dialog = QDialog(self)
-            self.log_dialog.setWindowTitle("PowerShell 输出日志")
-            self.log_dialog.setMinimumSize(600, 400)
-            layout = QVBoxLayout(self.log_dialog)
-
-            self.log_output = QTextEdit()
-            self.log_output.setFont(QFont("Consolas", 10))
-            self.log_output.setReadOnly(True)
-            layout.addWidget(self.log_output)
-
-            close_btn = QPushButton("关闭")
-            close_btn.clicked.connect(self.log_dialog.close)
-            layout.addWidget(close_btn, alignment=Qt.AlignRight)
-
-        self.log_output.setPlainText(self.log_text)
+        """显示日志对话框"""
+        if not hasattr(self, 'log_dialog') or not self.log_dialog:
+            self.create_log_dialog()
+        self.update_log_display()
         self.log_dialog.show()
+
+    def create_log_dialog(self):
+        """创建日志对话框"""
+        self.log_dialog = QDialog(self)
+        self.log_dialog.setWindowTitle("PowerShell 输出日志")
+        self.log_dialog.setMinimumSize(800, 600)
+        layout = QVBoxLayout(self.log_dialog)
+
+        # 使用 log_text_edit 而不是 log_output
+        self.log_text_edit = QTextEdit()
+        self.log_text_edit.setFont(QFont("Consolas", 10))
+        self.log_text_edit.setReadOnly(True)
+        layout.addWidget(self.log_text_edit)
+
+        # 底部按钮
+        btn_layout = QHBoxLayout()
+    
+        refresh_btn = QPushButton("🔄 刷新")
+        refresh_btn.clicked.connect(self.update_log_display)
+        btn_layout.addWidget(refresh_btn)
+    
+        clear_btn = QPushButton("🗑️ 清空日志")
+        clear_btn.clicked.connect(self.clear_log_file)
+        btn_layout.addWidget(clear_btn)
+    
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.log_dialog.close)
+        btn_layout.addWidget(close_btn)
+    
+        btn_layout.addStretch()
+        layout.addLayout(btn_layout)
+
+    def update_log_display(self):
+        """更新日志显示内容"""
+        try:
+            if os.path.exists(self.log_file_path):
+                with open(self.log_file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                self.log_text_edit.setPlainText(content)
+                # 自动滚动到底部
+                self.log_text_edit.verticalScrollBar().setValue(
+                    self.log_text_edit.verticalScrollBar().maximum()
+                )
+        except Exception as e:
+            self.log_text_edit.setPlainText(f"读取日志失败: {str(e)}")
+
+    def clear_log_file(self):
+        """清空日志文件"""
+        try:
+            with open(self.log_file_path, "w", encoding="utf-8") as f:
+                f.write("=== 日志已清空 ===\n")
+            self.update_log_display()
+            QMessageBox.information(self, "成功", "日志已清空")
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"清空日志失败: {str(e)}")
+
+    def save_log_file(self):
+        """保存日志到文件"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, 
+            "保存日志文件", 
+            os.path.expanduser("~/Desktop/acpi_helper_log.txt"), 
+            "Text Files (*.txt);;All Files (*)"
+        )
+        if file_path:
+            try:
+                if os.path.exists(self.log_file_path):
+                    shutil.copyfile(self.log_file_path, file_path)
+                    QMessageBox.information(self, "成功", f"日志已保存到: {file_path}")
+            except Exception as e:
+                QMessageBox.warning(self, "错误", f"保存日志失败: {str(e)}")
 
 
 
@@ -736,7 +879,16 @@ class DeviceLocationViewer(QMainWindow):
         QMessageBox.warning(self, "警告", "首次使用或刷新缓存时会遍历设备，耗时较长（1分钟左右），请耐心等待！！！")
         self.progress_bar.show()
         self.log_button.show()
+        if self.loader_thread and self.loader_thread.isRunning():
+            self.loader_thread.stop()
+            # 清空日志文件
+        if hasattr(self, 'log_file_path'):
+            open(self.log_file_path, "w", encoding="utf-8").close()
         self.log_text = ""
+            # 初始化日志文件
+        self.ensure_log_file()
+        with open(self.log_file_path, "w", encoding="utf-8") as f:
+            f.write("=== 开始新的设备扫描 ===\n")
         self.loader_thread = DeviceLoaderThread()
         self.loader_thread.data_loaded.connect(self.on_data_loaded)
         self.loader_thread.progress_update.connect(self.update_progress)
@@ -744,10 +896,16 @@ class DeviceLocationViewer(QMainWindow):
         self.loader_thread.start()
 
     def append_log(self, text):
-        """实时更新日志文本"""
-        self.log_text += text + "\n"
-        if self.log_dialog and self.log_dialog.isVisible():
-            self.log_output.append(text)
+        """追加日志内容到临时文件"""
+        try:
+            with open(self.log_file_path, "a", encoding="utf-8") as f:
+                f.write(text + "\n")
+        
+            # 如果日志窗口已打开，则实时更新内容
+            if hasattr(self, 'log_dialog') and self.log_dialog and self.log_dialog.isVisible():
+                self.update_log_display()
+        except Exception as e:
+            print(f"写入日志失败: {str(e)}")
 
     def update_progress(self, value, message):
         """更新进度条"""
